@@ -39,7 +39,7 @@ async function askAI(promptText) {
       Authorization: `Bearer ${apiKey}`,
     },
     body: JSON.stringify({
-      model: "deepseek/deepseek-chat-v3.1:free", // strong coding quality, free tier
+      model: "meta-llama/llama-3.3-70b-instruct:free", // strong coding quality, free tier
       messages: [{ role: "user", content: promptText }],
       temperature: 0.2, // low temperature = precise, kam galti
     }),
