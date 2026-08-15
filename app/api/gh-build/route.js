@@ -7,17 +7,33 @@ import { authOptions } from "../../../lib/authOptions";
 
 const SKIP_DIRS = ["node_modules", ".git", "build", ".next", "dist", ".expo", ".gradle", "ios/build", "android/build", "android/.gradle"];
 
-function detectProjectType(dir) {
-  if (fs.existsSync(path.join(dir, "pubspec.yaml"))) return "flutter";
-  const pkgPath = path.join(dir, "package.json");
-  if (fs.existsSync(pkgPath)) {
-    const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
-    const deps = { ...pkg.dependencies, ...pkg.devDependencies };
-    if (deps.expo && !fs.existsSync(path.join(dir, "android"))) return "expo";
-    if (deps["react-native"]) return "bare-rn";
+function findFileUpward(dir, filenames, maxDepth = 3, depth = 0) {
+  if (depth > maxDepth) return null;
+  const entries = fs.readdirSync(dir, { withFileTypes: true });
+  for (const name of filenames) {
+    if (fs.existsSync(path.join(dir, name))) return dir;
   }
-  if (fs.existsSync(path.join(dir, "build.gradle")) || fs.existsSync(path.join(dir, "build.gradle.kts"))) return "android-native";
-  return "unknown";
+  for (const entry of entries) {
+    if (entry.isDirectory() && !SKIP_DIRS.includes(entry.name) && entry.name !== "." ) {
+      const found = findFileUpward(path.join(dir, entry.name), filenames, maxDepth, depth + 1);
+      if (found) return found;
+    }
+  }
+  return null;
+}
+function detectProjectType(rootDir) {
+  const pubspecDir = findFileUpward(rootDir, ["pubspec.yaml"]);
+  if (pubspecDir) return { type: "flutter", root: pubspecDir };
+  const pkgDir = findFileUpward(rootDir, ["package.json"]);
+  if (pkgDir) {
+    const pkg = JSON.parse(fs.readFileSync(path.join(pkgDir, "package.json"), "utf8"));
+    const deps = { ...pkg.dependencies, ...pkg.devDependencies };
+    if (deps.expo && !fs.existsSync(path.join(pkgDir, "android"))) return { type: "expo", root: pkgDir };
+    if (deps["react-native"]) return { type: "bare-rn", root: pkgDir };
+  }
+  const gradleDir = findFileUpward(rootDir, ["build.gradle", "build.gradle.kts"]);
+  if (gradleDir) return { type: "android-native", root: gradleDir };
+  return { type: "unknown", root: rootDir };
 }
 
 function getWorkflow(type) {
@@ -132,7 +148,9 @@ export async function POST(request) {
     const buffer = Buffer.from(await file.arrayBuffer());
     new AdmZip(buffer).extractAllTo(workDir, true);
 
-    const type = detectProjectType(workDir);
+    const detected = detectProjectType(workDir);
+    const type = detected.type;
+    const buildRoot = detected.root;
     if (type === "unknown") {
       return Response.json({ error: "Project type pehchan nahi paye (Flutter/RN/Android nahi lagta)." }, { status: 400 });
     }
