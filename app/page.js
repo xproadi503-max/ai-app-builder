@@ -1,10 +1,41 @@
 "use client";
 import { useSession, signIn, signOut } from "next-auth/react";
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
+
+const styles = {
+  main: { maxWidth: 720, margin: "0 auto", padding: "32px 20px", fontFamily: "system-ui, sans-serif" },
+  header: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 28 },
+  title: { fontSize: 26, fontWeight: 700, display: "flex", alignItems: "center", gap: 10 },
+  card: { background: "#1e293b", padding: 20, borderRadius: 14, marginTop: 18, boxShadow: "0 2px 8px rgba(0,0,0,0.2)" },
+  sectionTitle: { fontSize: 16, fontWeight: 600, marginBottom: 12, color: "#e2e8f0" },
+  tabRow: { display: "flex", gap: 8, marginBottom: 16 },
+  tabBtn: (active) => ({
+    flex: 1, padding: "10px 14px", borderRadius: 10, border: "none", cursor: "pointer",
+    background: active ? "#3b82f6" : "#334155", color: "#fff", fontSize: 14, fontWeight: 600,
+  }),
+  primaryBtn: (disabled) => ({
+    padding: "12px 20px", background: disabled ? "#475569" : "#22c55e", border: "none", borderRadius: 10,
+    fontSize: 15, fontWeight: 600, color: "#fff", cursor: disabled ? "not-allowed" : "pointer", width: "100%", marginTop: 8,
+  }),
+  blueBtn: (disabled) => ({
+    padding: "12px 20px", background: disabled ? "#475569" : "#3b82f6", border: "none", borderRadius: 10,
+    fontSize: 15, fontWeight: 600, color: "#fff", cursor: disabled ? "not-allowed" : "pointer", width: "100%", marginTop: 12,
+  }),
+  select: { width: "100%", padding: "10px 12px", borderRadius: 10, border: "1px solid #334155", background: "#0f172a", color: "#fff", fontSize: 14, marginBottom: 4 },
+  fileInput: { width: "100%", padding: "10px", borderRadius: 10, border: "1px dashed #475569", background: "#0f172a", color: "#94a3b8", fontSize: 13, marginBottom: 4 },
+  badge: (color) => ({ display: "inline-block", padding: "3px 10px", borderRadius: 20, fontSize: 12, fontWeight: 600, background: color + "22", color }),
+  divider: { border: "none", borderTop: "1px solid #334155", margin: "22px 0" },
+  pre: { whiteSpace: "pre-wrap", fontFamily: "inherit", lineHeight: 1.7, fontSize: 14.5, color: "#cbd5e1" },
+  logoutBtn: { padding: "8px 16px", background: "#334155", border: "none", borderRadius: 8, color: "#fff", fontSize: 13, cursor: "pointer" },
+  loginBtn: { padding: "14px 24px", background: "#24292e", color: "#fff", border: "none", borderRadius: 12, fontSize: 16, fontWeight: 600, cursor: "pointer", display: "flex", alignItems: "center", gap: 10 },
+};
 
 export default function Home() {
   const { data: session } = useSession();
+  const [sourceMode, setSourceMode] = useState("zip"); // "zip" | "repo"
   const [file, setFile] = useState(null);
+  const [repos, setRepos] = useState([]);
+  const [selectedRepo, setSelectedRepo] = useState("");
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState(null);
   const [error, setError] = useState("");
@@ -18,13 +49,40 @@ export default function Home() {
   const retryCountRef = useRef(0);
   const MAX_RETRIES = 3;
 
+  useEffect(() => {
+    if (session && sourceMode === "repo" && repos.length === 0) {
+      fetch("/api/gh-repos").then((r) => r.json()).then((d) => {
+        if (d.repos) setRepos(d.repos);
+      });
+    }
+  }, [session, sourceMode]);
+
+  function currentSourcePayload() {
+    if (sourceMode === "repo") {
+      const r = repos.find((x) => x.fullName === selectedRepo);
+      if (!r) return null;
+      return { type: "repo", owner: r.owner, repo: r.name, branch: r.defaultBranch };
+    }
+    return { type: "zip" };
+  }
+
   async function handleAnalyze() {
-    if (!file) { setError("Pehle ek .zip file select karo"); return; }
     setError(""); setLoading(true); setResult(null);
-    const formData = new FormData();
-    formData.append("file", file);
     try {
-      const res = await fetch("/api/analyze", { method: "POST", body: formData });
+      let res;
+      if (sourceMode === "repo") {
+        const payload = currentSourcePayload();
+        if (!payload) { setError("Pehle ek repo select karo"); setLoading(false); return; }
+        res = await fetch("/api/analyze", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ owner: payload.owner, repo: payload.repo, branch: payload.branch }),
+        });
+      } else {
+        if (!file) { setError("Pehle ek .zip file select karo"); setLoading(false); return; }
+        const formData = new FormData();
+        formData.append("file", file);
+        res = await fetch("/api/analyze", { method: "POST", body: formData });
+      }
       const data = await res.json();
       if (data.error) setError(data.error); else setResult(data);
     } catch (e) { setError("Kuch galat ho gaya: " + e.message); }
@@ -32,19 +90,28 @@ export default function Home() {
   }
 
   async function handleBuildApk() {
-    if (!file) { setBuildError("Pehle .zip file select karo"); return; }
     setBuildError(""); setBuildInfo(null); setRepoInfo(null); setFixLog([]);
     setRetryCount(0); retryCountRef.current = 0; setBuildLoading(true);
-
-    const formData = new FormData();
-    formData.append("file", file);
     try {
-      const res = await fetch("/api/gh-build", { method: "POST", body: formData });
+      let res;
+      if (sourceMode === "repo") {
+        const payload = currentSourcePayload();
+        if (!payload) { setBuildError("Pehle ek repo select karo"); setBuildLoading(false); return; }
+        res = await fetch("/api/gh-build", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ owner: payload.owner, repo: payload.repo, branch: payload.branch }),
+        });
+      } else {
+        if (!file) { setBuildError("Pehle .zip file select karo"); setBuildLoading(false); return; }
+        const formData = new FormData();
+        formData.append("file", file);
+        res = await fetch("/api/gh-build", { method: "POST", body: formData });
+      }
       const data = await res.json();
       if (data.error) { setBuildError(data.error); setBuildLoading(false); return; }
       setRepoInfo(data);
       setBuildInfo({ status: "queued" });
-      setTimeout(() => pollBuildStatus(data.owner, data.repo), 20000); // pehli baar 20s wait (Action start hone ka time)
+      setTimeout(() => pollBuildStatus(data.owner, data.repo), 20000);
     } catch (e) { setBuildError("Kuch galat ho gaya: " + e.message); setBuildLoading(false); }
   }
 
@@ -55,14 +122,8 @@ export default function Home() {
         const data = await res.json();
         if (data.error) return;
         setBuildInfo(data);
-
-        if (data.status === "completed" && data.conclusion === "success") {
-          clearInterval(interval); setBuildLoading(false);
-        }
-        if (data.status === "completed" && data.conclusion === "failure") {
-          clearInterval(interval);
-          handleBuildFailure(owner, repo, data);
-        }
+        if (data.status === "completed" && data.conclusion === "success") { clearInterval(interval); setBuildLoading(false); }
+        if (data.status === "completed" && data.conclusion === "failure") { clearInterval(interval); handleBuildFailure(owner, repo, data); }
       } catch {}
     }, 15000);
   }
@@ -71,31 +132,14 @@ export default function Home() {
     const currentRetry = retryCountRef.current;
     const validFiles = data.aiFixFiles || [];
     const rejected = data.aiRejectedFiles || [];
-
-    setFixLog((prev) => [...prev, {
-      attempt: currentRetry + 1,
-      explanation: data.aiExplanation || "",
-      appliedFiles: validFiles.map((f) => f.path),
-      rejectedFiles: rejected,
-    }]);
-
-    if (currentRetry >= MAX_RETRIES || validFiles.length === 0) {
-      setBuildLoading(false);
-      return;
-    }
-
+    setFixLog((prev) => [...prev, { attempt: currentRetry + 1, explanation: data.aiExplanation || "", appliedFiles: validFiles.map((f) => f.path), rejectedFiles: rejected }]);
+    if (currentRetry >= MAX_RETRIES || validFiles.length === 0) { setBuildLoading(false); return; }
     try {
-      await fetch("/api/gh-apply-fix", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ owner, repo, files: validFiles }),
-      });
+      await fetch("/api/gh-apply-fix", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ owner, repo, files: validFiles }) });
       retryCountRef.current = currentRetry + 1;
       setRetryCount(currentRetry + 1);
       setTimeout(() => pollBuildStatus(owner, repo), 20000);
-    } catch {
-      setBuildLoading(false);
-    }
+    } catch { setBuildLoading(false); }
   }
 
   function downloadUrl() {
@@ -104,50 +148,66 @@ export default function Home() {
   }
 
   return (
-    <main style={{ maxWidth: 700, margin: "0 auto", padding: 24 }}>
-      <h1 style={{ fontSize: 24 }}>🤖 AI App Builder</h1>
+    <main style={styles.main}>
+      <div style={styles.header}>
+        <div style={styles.title}>🤖 AI App Builder</div>
+        {session && <button onClick={() => signOut()} style={styles.logoutBtn}>Logout</button>}
+      </div>
+
       {!session ? (
-        <button onClick={() => signIn("github")} style={{ padding: "12px 20px", background: "#24292e", color: "#fff", border: "none", borderRadius: 8, fontSize: 16 }}>
-          🐙 Login with GitHub
-        </button>
+        <button onClick={() => signIn("github")} style={styles.loginBtn}>🐙 Login with GitHub</button>
       ) : (
         <div>
-          <p>✅ Logged in as <b>{session.user.name || session.user.email}</b></p>
-          <button onClick={() => signOut()} style={{ padding: "8px 14px", marginBottom: 20 }}>Logout</button>
+          <p style={{ color: "#94a3b8", marginBottom: 0 }}>✅ Logged in as <b style={{ color: "#fff" }}>{session.user.name || session.user.email}</b></p>
 
-          <div style={{ background: "#1e293b", padding: 16, borderRadius: 12, marginTop: 16 }}>
-            <p>📦 Apna project ka <b>.zip</b> upload karo (Flutter / React Native / Expo / Native Android):</p>
-            <input type="file" accept=".zip" onChange={(e) => setFile(e.target.files[0])} style={{ margin: "12px 0" }} />
-            <br />
-            <button onClick={handleAnalyze} disabled={loading} style={{ padding: "10px 18px", background: "#22c55e", border: "none", borderRadius: 8, fontSize: 15, marginRight: 10 }}>
+          <div style={styles.card}>
+            <div style={styles.sectionTitle}>📦 Project Source</div>
+            <div style={styles.tabRow}>
+              <button style={styles.tabBtn(sourceMode === "zip")} onClick={() => setSourceMode("zip")}>📁 Upload Zip</button>
+              <button style={styles.tabBtn(sourceMode === "repo")} onClick={() => setSourceMode("repo")}>🐙 GitHub Repo</button>
+            </div>
+
+            {sourceMode === "zip" ? (
+              <input type="file" accept=".zip" onChange={(e) => setFile(e.target.files[0])} style={styles.fileInput} />
+            ) : (
+              <select style={styles.select} value={selectedRepo} onChange={(e) => setSelectedRepo(e.target.value)}>
+                <option value="">-- Repo select karo --</option>
+                {repos.map((r) => (
+                  <option key={r.fullName} value={r.fullName}>{r.fullName}{r.private ? " (private)" : ""}</option>
+                ))}
+              </select>
+            )}
+
+            <button onClick={handleAnalyze} disabled={loading} style={styles.primaryBtn(loading)}>
               {loading ? "⏳ Analyze ho raha hai..." : "🔍 Analyze Karo"}
             </button>
-            <button onClick={handleBuildApk} disabled={buildLoading} style={{ padding: "10px 18px", background: "#3b82f6", border: "none", borderRadius: 8, fontSize: 15, color: "#fff" }}>
+            <button onClick={handleBuildApk} disabled={buildLoading} style={styles.blueBtn(buildLoading)}>
               {buildLoading ? "⏳ Build ho raha hai..." : "📱 Build APK (GitHub Actions)"}
             </button>
           </div>
 
-          {error && <p style={{ color: "#f87171", marginTop: 16 }}>⚠️ {error}</p>}
+          {error && <p style={{ color: "#f87171", marginTop: 14 }}>⚠️ {error}</p>}
+
           {result && (
-            <div style={{ background: "#1e293b", padding: 16, borderRadius: 12, marginTop: 16 }}>
-              <h3>📋 AI ka Analysis ({result.fileCount} files mile)</h3>
-              <pre style={{ whiteSpace: "pre-wrap", fontFamily: "inherit", lineHeight: 1.6 }}>{result.analysis}</pre>
+            <div style={styles.card}>
+              <div style={styles.sectionTitle}>📋 AI ka Analysis <span style={styles.badge("#60a5fa")}>{result.fileCount} files</span></div>
+              <pre style={styles.pre}>{result.analysis}</pre>
             </div>
           )}
 
-          {buildError && <p style={{ color: "#f87171", marginTop: 16 }}>⚠️ {buildError}</p>}
+          {buildError && <p style={{ color: "#f87171", marginTop: 14 }}>⚠️ {buildError}</p>}
 
           {repoInfo && (
-            <div style={{ background: "#1e293b", padding: 16, borderRadius: 12, marginTop: 16 }}>
-              <h3>📱 Build Status</h3>
-              <p>Type detect hua: <b>{repoInfo.type}</b></p>
-              <p>Repo: <a href={`https://github.com/${repoInfo.owner}/${repoInfo.repo}`} target="_blank" rel="noreferrer" style={{ color: "#60a5fa" }}>{repoInfo.owner}/{repoInfo.repo}</a></p>
+            <div style={styles.card}>
+              <div style={styles.sectionTitle}>📱 Build Status</div>
+              <p style={{ color: "#cbd5e1" }}>Type: <span style={styles.badge("#4ade80")}>{repoInfo.type}</span></p>
+              <p style={{ color: "#cbd5e1" }}>Repo: <a href={`https://github.com/${repoInfo.owner}/${repoInfo.repo}`} target="_blank" rel="noreferrer" style={{ color: "#60a5fa" }}>{repoInfo.owner}/{repoInfo.repo}</a></p>
               {buildInfo && (
                 <>
-                  <p>Status: <b>{buildInfo.status}</b> {buildInfo.conclusion && `(${buildInfo.conclusion})`} {retryCount > 0 && `— Try ${retryCount}/${MAX_RETRIES}`}</p>
+                  <p style={{ color: "#cbd5e1" }}>Status: <b>{buildInfo.status}</b> {buildInfo.conclusion && `(${buildInfo.conclusion})`} {retryCount > 0 && `— Try ${retryCount}/${MAX_RETRIES}`}</p>
                   {buildInfo.runUrl && <p><a href={buildInfo.runUrl} target="_blank" rel="noreferrer" style={{ color: "#60a5fa" }}>🔗 Live logs dekho GitHub pe</a></p>}
                   {buildInfo.status === "completed" && buildInfo.conclusion === "success" && buildInfo.artifactId && (
-                    <p><a href={downloadUrl()} style={{ color: "#4ade80", fontWeight: "bold" }}>✅ APK Download Karo (zip me hoga)</a></p>
+                    <p><a href={downloadUrl()} style={{ color: "#4ade80", fontWeight: 700 }}>✅ APK Download Karo</a></p>
                   )}
                 </>
               )}
@@ -155,14 +215,14 @@ export default function Home() {
           )}
 
           {fixLog.length > 0 && (
-            <div style={{ background: "#1e293b", padding: 16, borderRadius: 12, marginTop: 16 }}>
-              <h4>🔧 Auto-Fix History</h4>
+            <div style={styles.card}>
+              <div style={styles.sectionTitle}>🔧 Auto-Fix History</div>
               {fixLog.map((log, i) => (
-                <div key={i} style={{ marginBottom: 12, paddingBottom: 12, borderBottom: "1px solid #334155" }}>
-                  <p><b>Try {log.attempt}:</b> {log.explanation}</p>
-                  {log.appliedFiles.length > 0 && <p style={{ color: "#4ade80" }}>✅ Fix apply hui: {log.appliedFiles.join(", ")}</p>}
-                  {log.rejectedFiles.length > 0 && <p style={{ color: "#fbbf24" }}>⚠️ AI ka code invalid tha, ignore kiya: {log.rejectedFiles.join(", ")}</p>}
-                  {log.appliedFiles.length === 0 && <p style={{ color: "#f87171" }}>❌ AI koi valid fix nahi de paya.</p>}
+                <div key={i} style={{ marginBottom: 12, paddingBottom: 12, borderBottom: i < fixLog.length - 1 ? "1px solid #334155" : "none" }}>
+                  <p style={{ color: "#e2e8f0" }}><b>Try {log.attempt}:</b> {log.explanation}</p>
+                  {log.appliedFiles.length > 0 && <p style={{ color: "#4ade80", fontSize: 14 }}>✅ Fix apply hui: {log.appliedFiles.join(", ")}</p>}
+                  {log.rejectedFiles.length > 0 && <p style={{ color: "#fbbf24", fontSize: 14 }}>⚠️ AI ka code invalid tha: {log.rejectedFiles.join(", ")}</p>}
+                  {log.appliedFiles.length === 0 && <p style={{ color: "#f87171", fontSize: 14 }}>❌ AI koi valid fix nahi de paya.</p>}
                 </div>
               ))}
             </div>

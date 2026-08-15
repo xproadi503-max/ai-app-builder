@@ -1,7 +1,9 @@
 import AdmZip from "adm-zip";
 import fetch from "node-fetch";
+import { getServerSession } from "next-auth/next";
+import { authOptions } from "../../../lib/authOptions";
 
-function readProjectFiles(zipBuffer) {
+function readZipFiles(zipBuffer) {
   const zip = new AdmZip(zipBuffer);
   const entries = zip.getEntries();
   let combinedText = "";
@@ -12,7 +14,8 @@ function readProjectFiles(zipBuffer) {
 
   for (const entry of entries) {
     if (entry.isDirectory) continue;
-    const name = entry.entryName;
+    let name = entry.entryName;
+    name = name.split("/").slice(1).join("/") || name; // GitHub zip me top-level extra folder hota hai
     fileList.push(name);
     const ext = "." + name.split(".").pop();
     if (allowedExt.includes(ext) && combinedText.length < maxTotalChars) {
@@ -25,59 +28,57 @@ function readProjectFiles(zipBuffer) {
 
 async function askAI(promptText) {
   const apiKey = process.env.OPENROUTER_API_KEY;
-  const url = "https://openrouter.ai/api/v1/chat/completions";
-  const response = await fetch(url, {
+  const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
-    body: JSON.stringify({
-      model: "openrouter/free",
-      messages: [{ role: "user", content: promptText }],
-      temperature: 0.2,
-    }),
+    body: JSON.stringify({ model: "openrouter/free", messages: [{ role: "user", content: promptText }], temperature: 0.2 }),
   });
   const data = await response.json();
-  const text = data?.choices?.[0]?.message?.content;
-  return text || "AI se response nahi mil paya. Error: " + JSON.stringify(data);
+  return data?.choices?.[0]?.message?.content || "AI se response nahi mil paya. Error: " + JSON.stringify(data);
 }
 
-export async function POST(request) {
-  try {
-    const formData = await request.formData();
-    const file = formData.get("file");
-    if (!file) return Response.json({ error: "Koi file upload nahi hui" }, { status: 400 });
-
-    const arrayBuffer = await file.arrayBuffer();
-    const buffer = Buffer.from(arrayBuffer);
-    const { combinedText, fileList } = readProjectFiles(buffer);
-
-    const prompt = `Tum ek expert code reviewer ho. Neeche ek project ki files hain.
+function buildPrompt(fileList, combinedText) {
+  return `Tum ek expert code reviewer ho. Neeche ek project ki files hain.
 Apna jawab EXACTLY in yeh headings ke saath do (Hinglish mein, simple bhasha):
 
 ## 1. Yeh Project Kya Karta Hai
-(2-3 lines mein)
-
 ## 2. Technology/Language Use Hui
-(list format mein)
-
 ## 3. Project Structure
-(files/folders ka short overview)
-
 ## 4. Bugs Aur Problems (code mein)
-Yeh section ALWAYS bharo, khaali mat chhodo. Har bug/problem ko is format mein likho:
-- **File:** [file ka naam]
-- **Problem:** [kya galat hai]
-- **Kyun issue hai:** [1 line mein]
-Agar sach me koi bug na mile, to likho: "Koi obvious bug nahi mila, lekin yeh cheezein improve ki ja sakti hain: ..."
-
+Yeh section ALWAYS bharo, khaali mat chhodo.
 ## 5. Run Karne Ke Steps
-(step by step)
 
 Files list: ${fileList.join(", ")}
 
 Project content:
 ${combinedText}`;
+}
 
-    const analysis = await askAI(prompt);
+export async function POST(request) {
+  try {
+    const contentType = request.headers.get("content-type") || "";
+    let buffer;
+
+    if (contentType.includes("application/json")) {
+      // GitHub repo se source
+      const session = await getServerSession(authOptions);
+      if (!session?.accessToken) return Response.json({ error: "Login chahiye" }, { status: 401 });
+
+      const { owner, repo, branch } = await request.json();
+      const zipRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/zipball/${branch || ""}`, {
+        headers: { Authorization: `Bearer ${session.accessToken}` },
+      });
+      if (!zipRes.ok) return Response.json({ error: "Repo download nahi ho paya" }, { status: 500 });
+      buffer = Buffer.from(await zipRes.arrayBuffer());
+    } else {
+      const formData = await request.formData();
+      const file = formData.get("file");
+      if (!file) return Response.json({ error: "Koi file upload nahi hui" }, { status: 400 });
+      buffer = Buffer.from(await file.arrayBuffer());
+    }
+
+    const { combinedText, fileList } = readZipFiles(buffer);
+    const analysis = await askAI(buildPrompt(fileList, combinedText));
     return Response.json({ analysis, fileCount: fileList.length, files: fileList });
   } catch (err) {
     return Response.json({ error: err.message }, { status: 500 });

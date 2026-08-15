@@ -39,14 +39,12 @@ function detectProjectType(rootDir) {
 
 function getWorkflow(type) {
   const upload = (p) => `      - uses: actions/upload-artifact@v4\n        with:\n          name: app-release-apk\n          path: ${p}`;
-
   const ensureGradlew = `      - name: Ensure gradlew exists
         run: |
           if [ ! -f "./gradlew" ]; then
             gradle wrapper --gradle-version 8.5
           fi
       - run: chmod +x gradlew && ./gradlew assembleRelease`;
-
   const ensureGradlewAndroidFolder = `      - name: Ensure gradlew exists
         run: |
           cd android
@@ -149,37 +147,71 @@ function walkFiles(dir, base = "") {
   return results;
 }
 
+async function pushFile(owner, repo, token, filePath, content, isBinaryBuffer = false) {
+  const contentBase64 = isBinaryBuffer ? content.toString("base64") : Buffer.from(content).toString("base64");
+  let sha;
+  const getRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/contents/${encodeURIComponent(filePath)}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (getRes.ok) sha = (await getRes.json()).sha;
+
+  return fetch(`https://api.github.com/repos/${owner}/${repo}/contents/${encodeURIComponent(filePath)}`, {
+    method: "PUT",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ message: sha ? `Update ${filePath}` : `Add ${filePath}`, content: contentBase64, sha }),
+  });
+}
+
 export async function POST(request) {
   const workDir = path.join(os.tmpdir(), "ghbuild-" + Date.now());
   try {
     const session = await getServerSession(authOptions);
     if (!session?.accessToken) {
-      return Response.json({ error: "Login nahi hai ya token missing. Logout karke dobara login karo." }, { status: 401 });
+      return Response.json({ error: "Login nahi hai ya token missing." }, { status: 401 });
     }
     const ghToken = session.accessToken;
 
-    const formData = await request.formData();
-    const file = formData.get("file");
-    if (!file) return Response.json({ error: "Koi file upload nahi hui" }, { status: 400 });
-
+    const contentType = request.headers.get("content-type") || "";
     fs.mkdirSync(workDir, { recursive: true });
-    const buffer = Buffer.from(await file.arrayBuffer());
-    new AdmZip(buffer).extractAllTo(workDir, true);
+
+    if (contentType.includes("application/json")) {
+      // Existing GitHub repo se source
+      const { owner: srcOwner, repo: srcRepo, branch } = await request.json();
+      const zipRes = await fetch(`https://api.github.com/repos/${srcOwner}/${srcRepo}/zipball/${branch || ""}`, {
+        headers: { Authorization: `Bearer ${ghToken}` },
+      });
+      if (!zipRes.ok) return Response.json({ error: "Repo download nahi ho paya" }, { status: 500 });
+      const buffer = Buffer.from(await zipRes.arrayBuffer());
+      const zip = new AdmZip(buffer);
+      zip.extractAllTo(workDir, true);
+      // GitHub zipball ek top-level extra folder deta hai, usko unwrap karo
+      const inner = fs.readdirSync(workDir);
+      if (inner.length === 1 && fs.statSync(path.join(workDir, inner[0])).isDirectory()) {
+        const innerPath = path.join(workDir, inner[0]);
+        for (const item of fs.readdirSync(innerPath)) {
+          fs.renameSync(path.join(innerPath, item), path.join(workDir, item));
+        }
+        fs.rmdirSync(innerPath);
+      }
+    } else {
+      const formData = await request.formData();
+      const file = formData.get("file");
+      if (!file) return Response.json({ error: "Koi file upload nahi hui" }, { status: 400 });
+      const buffer = Buffer.from(await file.arrayBuffer());
+      new AdmZip(buffer).extractAllTo(workDir, true);
+    }
 
     const detected = detectProjectType(workDir);
     const type = detected.type;
     const buildRoot = detected.root;
     if (type === "unknown") {
-      return Response.json({ error: "Project type pehchan nahi paye (Flutter/RN/Android nahi lagta)." }, { status: 400 });
+      return Response.json({ error: "Project type pehchan nahi paye." }, { status: 400 });
     }
     const workflow = getWorkflow(type);
 
-    const userRes = await fetch("https://api.github.com/user", {
-      headers: { Authorization: `Bearer ${ghToken}` },
-    });
+    const userRes = await fetch("https://api.github.com/user", { headers: { Authorization: `Bearer ${ghToken}` } });
     const user = await userRes.json();
     const owner = user.login;
-
     const repoName = "ai-build-" + Date.now();
 
     const createRepoRes = await fetch("https://api.github.com/user/repos", {
@@ -211,26 +243,4 @@ export async function POST(request) {
   } finally {
     try { fs.rmSync(workDir, { recursive: true, force: true }); } catch {}
   }
-}
-
-async function pushFile(owner, repo, token, filePath, content, isBinaryBuffer = false) {
-  const contentBase64 = isBinaryBuffer ? content.toString("base64") : Buffer.from(content).toString("base64");
-  let sha;
-  const getRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/contents/${encodeURIComponent(filePath)}`, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
-  if (getRes.ok) {
-    const data = await getRes.json();
-    sha = data.sha;
-  }
-
-  return fetch(`https://api.github.com/repos/${owner}/${repo}/contents/${encodeURIComponent(filePath)}`, {
-    method: "PUT",
-    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-    body: JSON.stringify({
-      message: sha ? `Update ${filePath}` : `Add ${filePath}`,
-      content: contentBase64,
-      sha,
-    }),
-  });
 }
