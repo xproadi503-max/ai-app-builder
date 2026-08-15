@@ -14,13 +14,14 @@ function findFileUpward(dir, filenames, maxDepth = 3, depth = 0) {
     if (fs.existsSync(path.join(dir, name))) return dir;
   }
   for (const entry of entries) {
-    if (entry.isDirectory() && !SKIP_DIRS.includes(entry.name) && entry.name !== "." ) {
+    if (entry.isDirectory() && !SKIP_DIRS.includes(entry.name)) {
       const found = findFileUpward(path.join(dir, entry.name), filenames, maxDepth, depth + 1);
       if (found) return found;
     }
   }
   return null;
 }
+
 function detectProjectType(rootDir) {
   const pubspecDir = findFileUpward(rootDir, ["pubspec.yaml"]);
   if (pubspecDir) return { type: "flutter", root: pubspecDir };
@@ -38,6 +39,23 @@ function detectProjectType(rootDir) {
 
 function getWorkflow(type) {
   const upload = (p) => `      - uses: actions/upload-artifact@v4\n        with:\n          name: app-release-apk\n          path: ${p}`;
+
+  const ensureGradlew = `      - name: Ensure gradlew exists
+        run: |
+          if [ ! -f "./gradlew" ]; then
+            gradle wrapper --gradle-version 8.5
+          fi
+      - run: chmod +x gradlew && ./gradlew assembleRelease`;
+
+  const ensureGradlewAndroidFolder = `      - name: Ensure gradlew exists
+        run: |
+          cd android
+          if [ ! -f "./gradlew" ]; then
+            gradle wrapper --gradle-version 8.5
+          fi
+          cd ..
+      - run: cd android && chmod +x gradlew && ./gradlew assembleRelease`;
+
   if (type === "flutter") {
     return `name: Build APK
 on: push
@@ -71,7 +89,7 @@ jobs:
         with:
           distribution: 'temurin'
           java-version: '17'
-      - run: cd android && chmod +x gradlew && ./gradlew assembleRelease
+${ensureGradlewAndroidFolder}
 ${upload("android/app/build/outputs/apk/release/app-release.apk")}
 `;
   }
@@ -91,7 +109,7 @@ jobs:
         with:
           distribution: 'temurin'
           java-version: '17'
-      - run: cd android && chmod +x gradlew && ./gradlew assembleRelease
+${ensureGradlewAndroidFolder}
 ${upload("android/app/build/outputs/apk/release/app-release.apk")}
 `;
   }
@@ -107,7 +125,7 @@ jobs:
         with:
           distribution: 'temurin'
           java-version: '17'
-      - run: chmod +x gradlew && ./gradlew assembleRelease
+${ensureGradlew}
 ${upload("app/build/outputs/apk/release/app-release.apk")}
 `;
   }
@@ -156,7 +174,6 @@ export async function POST(request) {
     }
     const workflow = getWorkflow(type);
 
-    // GitHub user info
     const userRes = await fetch("https://api.github.com/user", {
       headers: { Authorization: `Bearer ${ghToken}` },
     });
@@ -165,7 +182,6 @@ export async function POST(request) {
 
     const repoName = "ai-build-" + Date.now();
 
-    // Repo banao
     const createRepoRes = await fetch("https://api.github.com/user/repos", {
       method: "POST",
       headers: { Authorization: `Bearer ${ghToken}`, "Content-Type": "application/json" },
@@ -176,13 +192,15 @@ export async function POST(request) {
       return Response.json({ error: "Repo nahi ban paya: " + JSON.stringify(errData) }, { status: 500 });
     }
 
-    // Workflow file push
-    await pushFile(owner, repoName, ghToken, ".github/workflows/build.yml", workflow);
+    const workflowPushRes = await pushFile(owner, repoName, ghToken, ".github/workflows/build.yml", workflow);
+    if (!workflowPushRes.ok) {
+      const errData = await workflowPushRes.json();
+      return Response.json({ error: "Workflow push nahi ho payi: " + JSON.stringify(errData) }, { status: 500 });
+    }
 
-    // Baaki saari project files push karo
-    const allFiles = walkFiles(workDir);
+    const allFiles = walkFiles(buildRoot);
     for (const relPath of allFiles) {
-      const fullPath = path.join(workDir, relPath);
+      const fullPath = path.join(buildRoot, relPath);
       const content = fs.readFileSync(fullPath);
       await pushFile(owner, repoName, ghToken, relPath, content, true);
     }
@@ -197,7 +215,6 @@ export async function POST(request) {
 
 async function pushFile(owner, repo, token, filePath, content, isBinaryBuffer = false) {
   const contentBase64 = isBinaryBuffer ? content.toString("base64") : Buffer.from(content).toString("base64");
-  // Existing file ho to uska sha chahiye hoga update ke liye
   let sha;
   const getRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/contents/${encodeURIComponent(filePath)}`, {
     headers: { Authorization: `Bearer ${token}` },
@@ -207,7 +224,7 @@ async function pushFile(owner, repo, token, filePath, content, isBinaryBuffer = 
     sha = data.sha;
   }
 
-  await fetch(`https://api.github.com/repos/${owner}/${repo}/contents/${encodeURIComponent(filePath)}`, {
+  return fetch(`https://api.github.com/repos/${owner}/${repo}/contents/${encodeURIComponent(filePath)}`, {
     method: "PUT",
     headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
     body: JSON.stringify({
