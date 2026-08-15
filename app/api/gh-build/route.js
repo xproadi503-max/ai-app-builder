@@ -3,7 +3,7 @@ import fs from "fs";
 import path from "path";
 import os from "os";
 import { getServerSession } from "next-auth/next";
-import { authOptions } from "../../../../lib/authOptions";
+import { authOptions } from "../../../lib/authOptions";
 
 const SKIP_DIRS = ["node_modules", ".git", "build", ".next", "dist", ".expo", ".gradle", "ios/build", "android/build", "android/.gradle"];
 
