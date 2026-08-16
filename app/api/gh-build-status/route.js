@@ -1,6 +1,6 @@
-import { askAI } from "../../../lib/ai";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "../../../lib/authOptions";
+import { councilFix } from "../../../lib/ai";
 import * as acorn from "acorn";
 import jsx from "acorn-jsx";
 
@@ -10,7 +10,6 @@ function validateSyntax(content) {
   try { JSXParser.parse(content, { ecmaVersion: "latest", sourceType: "module" }); return true; }
   catch { return false; }
 }
-
 
 function extractJson(text) {
   const cleaned = text.replace(/```json/gi, "").replace(/```/g, "").trim();
@@ -29,8 +28,9 @@ export async function GET(request) {
     const { searchParams } = new URL(request.url);
     const owner = searchParams.get("owner");
     const repo = searchParams.get("repo");
+    const branch = searchParams.get("branch") || "main";
 
-    const runsRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/actions/runs?per_page=1`, {
+    const runsRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/actions/runs?per_page=1&branch=${branch}`, {
       headers: { Authorization: `Bearer ${token}` },
     });
     const runsData = await runsRes.json();
@@ -44,8 +44,8 @@ export async function GET(request) {
         headers: { Authorization: `Bearer ${token}` },
       });
       const artData = await artRes.json();
-      const artifact = artData.artifacts?.[0];
-      if (artifact) result.artifactId = artifact.id;
+      const apkArtifact = artData.artifacts?.find((a) => a.name === "signed-apk") || artData.artifacts?.[0];
+      if (apkArtifact) result.artifactId = apkArtifact.id;
     }
 
     if (run.status === "completed" && run.conclusion === "failure") {
@@ -61,16 +61,12 @@ export async function GET(request) {
         });
         const logsText = (await logsRes.text()).slice(-4000);
 
-        const prompt = `Tum expert mobile developer ho. Neeche GitHub Actions build fail hone ka log hai.
-SIRF JSON format me jawab do (koi extra text nahi):
-{"explanation": "Hinglish mein simple explanation", "files": [{"path": "relative/path.js", "content": "poori nayi file content"}]}
-Agar pata na chale to files: [] rakho.
-
-Log:
-${logsText}`;
-
-        const aiRaw = await askAI(prompt);
-        const parsed = extractJson(aiRaw);
+        const { finalOutput, steps } = await councilFix(
+          logsText,
+          "Neeche GitHub Actions build fail hone ka error LOG hai (poora project code nahi hai, sirf log hai). Isse samjho kya galat hai aur agar koi specific file ka fix pata chal sakta hai to do, warna files: [] rakho.",
+          token
+        );
+        const parsed = extractJson(finalOutput);
 
         if (parsed && Array.isArray(parsed.files)) {
           const validFiles = [];
@@ -83,12 +79,14 @@ ${logsText}`;
               try { JSON.parse(f.content); validFiles.push(f); } catch { rejected.push(f.path); }
             } else validFiles.push(f);
           }
-          result.aiExplanation = parsed.explanation || "";
+          result.aiExplanation = parsed.explanation || parsed.summary || "";
           result.aiFixFiles = validFiles;
           result.aiRejectedFiles = rejected;
+          result.councilSteps = steps;
         } else {
-          result.aiExplanation = "AI se structured fix nahi mila.";
+          result.aiExplanation = "3 AI ne mil ke socha, lekin structured fix nahi mila.";
           result.aiFixFiles = [];
+          result.councilSteps = steps;
         }
       }
     }

@@ -126,7 +126,7 @@ jobs:
       - uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
-          java-version: '17'
+          java-version: '21'
       - run: cd android && chmod +x gradlew && ./gradlew assembleRelease
 ${signStep("android/app/build/outputs/apk/release/app-release-unsigned.apk", alias, storePass, keyPass)}
 `;
@@ -163,7 +163,7 @@ jobs:
       - uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
-          java-version: '17'
+          java-version: '21'
       - name: Ensure gradlew exists
         run: |
           cd android
@@ -190,7 +190,7 @@ jobs:
       - uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
-          java-version: '17'
+          java-version: '21'
       - name: Ensure gradlew exists
         run: |
           cd android
@@ -213,7 +213,7 @@ jobs:
       - uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
-          java-version: '17'
+          java-version: '21'
       - name: Ensure gradlew exists
         run: |
           if [ ! -f "./gradlew" ]; then
