@@ -1,6 +1,5 @@
-import { askAI } from "../../../lib/ai";
 import AdmZip from "adm-zip";
-import fetch from "node-fetch";
+import { askAI } from "../../../lib/ai";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "../../../lib/authOptions";
 
@@ -16,7 +15,7 @@ function readZipFiles(zipBuffer) {
   for (const entry of entries) {
     if (entry.isDirectory) continue;
     let name = entry.entryName;
-    name = name.split("/").slice(1).join("/") || name; // GitHub zip me top-level extra folder hota hai
+    name = name.split("/").slice(1).join("/") || name;
     fileList.push(name);
     const ext = "." + name.split(".").pop();
     if (allowedExt.includes(ext) && combinedText.length < maxTotalChars) {
@@ -26,7 +25,6 @@ function readZipFiles(zipBuffer) {
   }
   return { combinedText, fileList };
 }
-
 
 function buildPrompt(fileList, combinedText) {
   return `Tum ek expert code reviewer ho. Neeche ek project ki files hain.
@@ -38,8 +36,7 @@ Apna jawab EXACTLY in yeh headings ke saath do (Hinglish mein, simple bhasha):
 ## 4. Bugs Aur Problems (code mein)
 Yeh section ALWAYS bharo, khaali mat chhodo.
 ## 5. Security Check (API Keys/Secrets)
-Agar code mein koi hardcoded API key, password, ya secret token dikhe (jo .env mein hona chahiye tha), to yaha WARNING do: file naam aur kya risk hai. Agar kuch na mile to likho "Koi hardcoded secret nahi mila, achha hai!"
-
+Agar code mein koi hardcoded API key, password, ya secret token dikhe, to yaha WARNING do. Agar kuch na mile to likho "Koi hardcoded secret nahi mila, achha hai!"
 ## 6. Run Karne Ke Steps
 
 Files list: ${fileList.join(", ")}
@@ -51,10 +48,9 @@ ${combinedText}`;
 export async function POST(request) {
   try {
     const contentType = request.headers.get("content-type") || "";
-    let buffer;
+    let fileList, combinedText;
 
     if (contentType.includes("application/json")) {
-      // GitHub repo se source
       const session = await getServerSession(authOptions);
       if (!session?.accessToken) return Response.json({ error: "Login chahiye" }, { status: 401 });
 
@@ -63,15 +59,27 @@ export async function POST(request) {
         headers: { Authorization: `Bearer ${session.accessToken}` },
       });
       if (!zipRes.ok) return Response.json({ error: "Repo download nahi ho paya" }, { status: 500 });
-      buffer = Buffer.from(await zipRes.arrayBuffer());
+      const buffer = Buffer.from(await zipRes.arrayBuffer());
+      const result = readZipFiles(buffer);
+      fileList = result.fileList; combinedText = result.combinedText;
     } else {
       const formData = await request.formData();
       const file = formData.get("file");
       if (!file) return Response.json({ error: "Koi file upload nahi hui" }, { status: 400 });
-      buffer = Buffer.from(await file.arrayBuffer());
+
+      const isZip = file.name.toLowerCase().endsWith(".zip");
+      if (isZip) {
+        const buffer = Buffer.from(await file.arrayBuffer());
+        const result = readZipFiles(buffer);
+        fileList = result.fileList; combinedText = result.combinedText;
+      } else {
+        // Single file - seedha content padho, unzip mat karo
+        const textContent = Buffer.from(await file.arrayBuffer()).toString("utf8");
+        fileList = [file.name];
+        combinedText = `\n\n--- FILE: ${file.name} ---\n${textContent.slice(0, 20000)}`;
+      }
     }
 
-    const { combinedText, fileList } = readZipFiles(buffer);
     const analysis = await askAI(buildPrompt(fileList, combinedText));
     return Response.json({ analysis, fileCount: fileList.length, files: fileList });
   } catch (err) {
