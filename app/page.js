@@ -195,7 +195,7 @@ export default function Home() {
             </div>
 
             {sourceMode === "zip" ? (
-              <input type="file" accept=".zip" onChange={(e) => setFile(e.target.files[0])} style={styles.fileInput} />
+              <input type="file" accept=".zip,.jsx,.tsx,.js" onChange={(e) => setFile(e.target.files[0])} style={styles.fileInput} />
             ) : (
               <select style={styles.select} value={selectedRepo} onChange={(e) => setSelectedRepo(e.target.value)}>
                 <option value="">-- Repo select karo --</option>

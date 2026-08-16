@@ -37,6 +37,45 @@ function detectProjectType(rootDir) {
   return { type: "unknown", root: rootDir };
 }
 
+// Single .jsx/.tsx/.js file ko poora Vite+Capacitor web-app project bana deta hai
+function scaffoldWebProjectFromSingleFile(workDir, fileContent, originalName) {
+  fs.mkdirSync(path.join(workDir, "src"), { recursive: true });
+
+  fs.writeFileSync(path.join(workDir, "package.json"), JSON.stringify({
+    name: "ai-generated-app",
+    version: "1.0.0",
+    private: true,
+    scripts: { dev: "vite", build: "vite build" },
+    dependencies: { react: "18.3.1", "react-dom": "18.3.1", "lucide-react": "0.383.0" },
+    devDependencies: { vite: "5.4.0", "@vitejs/plugin-react": "4.3.1" },
+  }, null, 2));
+
+  fs.writeFileSync(path.join(workDir, "vite.config.js"), `import { defineConfig } from "vite";
+import react from "@vitejs/plugin-react";
+export default defineConfig({ plugins: [react()], base: "./" });
+`);
+
+  fs.writeFileSync(path.join(workDir, "index.html"), `<!doctype html>
+<html>
+<head><meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" /><title>App</title></head>
+<body><div id="root"></div><script type="module" src="/src/main.jsx"></script></body>
+</html>
+`);
+
+  fs.writeFileSync(path.join(workDir, "src/main.jsx"), `import React from "react";
+import ReactDOM from "react-dom/client";
+import App from "./App.jsx";
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+`);
+
+  // Ensure default export exists so App.jsx works as entry
+  let content = fileContent;
+  if (!/export\s+default/.test(content)) {
+    content += `\n\nexport default function AutoWrappedApp() { return null; }\n`;
+  }
+  fs.writeFileSync(path.join(workDir, "src/App.jsx"), content);
+}
+
 function signStep(apkPathVar, alias, storePass, keyPass) {
   return `      - name: Setup Android SDK tools
         uses: android-actions/setup-android@v3
@@ -67,6 +106,31 @@ function getWorkflow(type, signing) {
   const storePass = signing.storePass || "changeit123";
   const keyPass = signing.keyPass || signing.storePass || "changeit123";
 
+  if (type === "web-capacitor") {
+    return `name: Build APK
+on: push
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - run: npm install
+      - run: npm run build
+      - run: npm install @capacitor/core @capacitor/cli @capacitor/android
+      - run: npx cap init "AI Generated App" "com.aibuilder.app" --web-dir=dist
+      - run: npx cap add android
+      - run: npx cap sync android
+      - uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+      - run: cd android && chmod +x gradlew && ./gradlew assembleRelease
+${signStep("android/app/build/outputs/apk/release/app-release-unsigned.apk", alias, storePass, keyPass)}
+`;
+  }
   if (type === "flutter") {
     return `name: Build APK
 on: push
@@ -197,15 +261,14 @@ export async function POST(request) {
   const workDir = path.join(os.tmpdir(), "ghbuild-" + Date.now());
   try {
     const session = await getServerSession(authOptions);
-    if (!session?.accessToken) {
-      return Response.json({ error: "Login nahi hai." }, { status: 401 });
-    }
+    if (!session?.accessToken) return Response.json({ error: "Login nahi hai." }, { status: 401 });
     const ghToken = session.accessToken;
     const contentType = request.headers.get("content-type") || "";
     fs.mkdirSync(workDir, { recursive: true });
 
     let keystoreBuffer = null;
     let signing = {};
+    let isSingleFile = false;
 
     if (contentType.includes("application/json")) {
       const { owner: srcOwner, repo: srcRepo, branch } = await request.json();
@@ -225,8 +288,17 @@ export async function POST(request) {
       const formData = await request.formData();
       const file = formData.get("file");
       if (!file) return Response.json({ error: "Koi file upload nahi hui" }, { status: 400 });
-      const buffer = Buffer.from(await file.arrayBuffer());
-      new AdmZip(buffer).extractAllTo(workDir, true);
+
+      const isZip = file.name.toLowerCase().endsWith(".zip");
+      if (isZip) {
+        const buffer = Buffer.from(await file.arrayBuffer());
+        new AdmZip(buffer).extractAllTo(workDir, true);
+      } else {
+        // Single .jsx/.tsx/.js file - khud poora project scaffold karo
+        isSingleFile = true;
+        const textContent = Buffer.from(await file.arrayBuffer()).toString("utf8");
+        scaffoldWebProjectFromSingleFile(workDir, textContent, file.name);
+      }
 
       const keystoreFile = formData.get("keystore");
       if (keystoreFile && keystoreFile.size > 0) {
@@ -239,11 +311,17 @@ export async function POST(request) {
       };
     }
 
-    const detected = detectProjectType(workDir);
-    const type = detected.type;
-    const buildRoot = detected.root;
-    if (type === "unknown") {
-      return Response.json({ error: "Project type pehchan nahi paye." }, { status: 400 });
+    let type, buildRoot;
+    if (isSingleFile) {
+      type = "web-capacitor";
+      buildRoot = workDir;
+    } else {
+      const detected = detectProjectType(workDir);
+      type = detected.type;
+      buildRoot = detected.root;
+      if (type === "unknown") {
+        return Response.json({ error: "Project type pehchan nahi paye." }, { status: 400 });
+      }
     }
     const workflow = getWorkflow(type, signing);
 
@@ -279,7 +357,7 @@ export async function POST(request) {
       await pushFile(owner, repoName, ghToken, relPath, content, true);
     }
 
-    return Response.json({ owner, repo: repoName, type, hasCustomKeystore: !!keystoreBuffer });
+    return Response.json({ owner, repo: repoName, type, hasCustomKeystore: !!keystoreBuffer, isSingleFile });
   } catch (err) {
     return Response.json({ error: err.message }, { status: 500 });
   } finally {
