@@ -1,4 +1,5 @@
 "use client";
+import LivePreviewFrame from "./LivePreviewFrame";
 import { useSession, signIn, signOut } from "next-auth/react";
 import { useState, useRef, useEffect } from "react";
 
@@ -67,6 +68,20 @@ export default function Home() {
       return { type: "repo", owner: r.owner, repo: r.name, branch: r.defaultBranch };
     }
     return { type: "zip" };
+  }
+
+  const [livePreviewCode, setLivePreviewCode] = useState(null);
+  const [buildScreenshot, setBuildScreenshot] = useState(null);
+
+  function handleFileSelect(e) {
+    const f = e.target.files[0];
+    setFile(f);
+    setLivePreviewCode(null);
+    if (f && !f.name.toLowerCase().endsWith(".zip")) {
+      const reader = new FileReader();
+      reader.onload = () => setLivePreviewCode(reader.result);
+      reader.readAsText(f);
+    }
   }
 
   async function handleAnalyze() {
@@ -198,7 +213,7 @@ export default function Home() {
             </div>
 
             {sourceMode === "zip" ? (
-              <input type="file" accept=".zip,.jsx,.tsx,.js" onChange={(e) => setFile(e.target.files[0])} style={styles.fileInput} />
+              <input type="file" accept=".zip,.jsx,.tsx,.js" onChange={handleFileSelect} style={styles.fileInput} />
             ) : (
               <select style={styles.select} value={selectedRepo} onChange={(e) => setSelectedRepo(e.target.value)}>
                 <option value="">-- Repo select karo --</option>
@@ -216,6 +231,12 @@ export default function Home() {
             </button>
           </div>
 
+          {livePreviewCode && (
+            <div style={styles.card}>
+              <div style={styles.sectionTitle}>👁️ Live Preview</div>
+              <LivePreviewFrame code={livePreviewCode} />
+            </div>
+          )}
           {error && <p style={{ color: "#f87171", marginTop: 14 }}>⚠️ {error}</p>}
 
           {result && (
