@@ -1,3 +1,4 @@
+import { askAI } from "../../../lib/ai";
 import AdmZip from "adm-zip";
 import fetch from "node-fetch";
 import { getServerSession } from "next-auth/next";
@@ -26,16 +27,6 @@ function readZipFiles(zipBuffer) {
   return { combinedText, fileList };
 }
 
-async function askAI(promptText) {
-  const apiKey = process.env.OPENROUTER_API_KEY;
-  const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
-    body: JSON.stringify({ model: "openrouter/free", messages: [{ role: "user", content: promptText }], temperature: 0.2 }),
-  });
-  const data = await response.json();
-  return data?.choices?.[0]?.message?.content || "AI se response nahi mil paya. Error: " + JSON.stringify(data);
-}
 
 function buildPrompt(fileList, combinedText) {
   return `Tum ek expert code reviewer ho. Neeche ek project ki files hain.

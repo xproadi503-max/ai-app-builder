@@ -1,3 +1,4 @@
+import { askAI } from "../../../lib/ai";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "../../../lib/authOptions";
 import * as acorn from "acorn";
@@ -10,16 +11,6 @@ function validateSyntax(content) {
   catch { return false; }
 }
 
-async function askAI(promptText) {
-  const apiKey = process.env.OPENROUTER_API_KEY;
-  const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
-    body: JSON.stringify({ model: "openrouter/free", messages: [{ role: "user", content: promptText }], temperature: 0.1 }),
-  });
-  const data = await res.json();
-  return data?.choices?.[0]?.message?.content || "";
-}
 
 function extractJson(text) {
   const cleaned = text.replace(/```json/gi, "").replace(/```/g, "").trim();
