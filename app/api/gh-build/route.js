@@ -37,49 +37,26 @@ function detectProjectType(rootDir) {
   return { type: "unknown", root: rootDir };
 }
 
-// Single .jsx/.tsx/.js file ko poora Vite+Capacitor web-app project bana deta hai
-function scaffoldWebProjectFromSingleFile(workDir, fileContent, originalName) {
+function scaffoldWebProjectFromSingleFile(workDir, fileContent) {
   fs.mkdirSync(path.join(workDir, "src"), { recursive: true });
-
   fs.writeFileSync(path.join(workDir, "package.json"), JSON.stringify({
-    name: "ai-generated-app",
-    version: "1.0.0",
-    private: true,
+    name: "ai-generated-app", version: "1.0.0", private: true,
     scripts: { dev: "vite", build: "vite build" },
     dependencies: { react: "18.3.1", "react-dom": "18.3.1", "lucide-react": "0.383.0" },
     devDependencies: { vite: "5.4.0", "@vitejs/plugin-react": "4.3.1" },
   }, null, 2));
-
-  fs.writeFileSync(path.join(workDir, "vite.config.js"), `import { defineConfig } from "vite";
-import react from "@vitejs/plugin-react";
-export default defineConfig({ plugins: [react()], base: "./" });
-`);
-
-  fs.writeFileSync(path.join(workDir, "index.html"), `<!doctype html>
-<html>
-<head><meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" /><title>App</title></head>
-<body><div id="root"></div><script type="module" src="/src/main.jsx"></script></body>
-</html>
-`);
-
-  fs.writeFileSync(path.join(workDir, "src/main.jsx"), `import React from "react";
-import ReactDOM from "react-dom/client";
-import App from "./App.jsx";
-ReactDOM.createRoot(document.getElementById("root")).render(<App />);
-`);
-
-  // Ensure default export exists so App.jsx works as entry
+  fs.writeFileSync(path.join(workDir, "vite.config.js"), `import { defineConfig } from "vite";\nimport react from "@vitejs/plugin-react";\nexport default defineConfig({ plugins: [react()], base: "./" });\n`);
+  fs.writeFileSync(path.join(workDir, "index.html"), `<!doctype html>\n<html><head><meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" /><title>App</title></head>\n<body><div id="root"></div><script type="module" src="/src/main.jsx"></script></body></html>\n`);
+  fs.writeFileSync(path.join(workDir, "src/main.jsx"), `import React from "react";\nimport ReactDOM from "react-dom/client";\nimport App from "./App.jsx";\nReactDOM.createRoot(document.getElementById("root")).render(<App />);\n`);
   let content = fileContent;
-  if (!/export\s+default/.test(content)) {
-    content += `\n\nexport default function AutoWrappedApp() { return null; }\n`;
-  }
+  if (!/export\s+default/.test(content)) content += `\n\nexport default function AutoWrappedApp() { return null; }\n`;
   fs.writeFileSync(path.join(workDir, "src/App.jsx"), content);
 }
 
 function signStep(apkPathVar, alias, storePass, keyPass) {
   return `      - name: Setup Android SDK tools
         uses: android-actions/setup-android@v3
-      - name: Prepare keystore (use uploaded ya generate naya)
+      - name: Prepare keystore
         run: |
           mkdir -p keystore_out
           if [ -f "keystore/release.keystore" ]; then
@@ -243,17 +220,49 @@ function walkFiles(dir, base = "") {
   return results;
 }
 
-async function pushFile(owner, repo, token, filePath, content, isBinaryBuffer = false) {
-  const contentBase64 = isBinaryBuffer ? content.toString("base64") : Buffer.from(content).toString("base64");
-  let sha;
-  const getRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/contents/${encodeURIComponent(filePath)}`, {
-    headers: { Authorization: `Bearer ${token}` },
+// Sab files ko EK commit me daalne ke liye Git Data API use karte hain (Trees API)
+async function batchCommitAllFiles(owner, repo, token, filesMap) {
+  const headers = { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
+
+  const refRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/git/ref/heads/main`, { headers });
+  const refData = await refRes.json();
+  const latestCommitSha = refData.object.sha;
+
+  const commitRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/git/commits/${latestCommitSha}`, { headers });
+  const commitData = await commitRes.json();
+  const baseTreeSha = commitData.tree.sha;
+
+  // Har file ka blob banao
+  const treeItems = [];
+  for (const [filePath, content] of Object.entries(filesMap)) {
+    const isBuffer = Buffer.isBuffer(content);
+    const blobRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/git/blobs`, {
+      method: "POST", headers,
+      body: JSON.stringify({
+        content: isBuffer ? content.toString("base64") : Buffer.from(content).toString("base64"),
+        encoding: "base64",
+      }),
+    });
+    const blobData = await blobRes.json();
+    treeItems.push({ path: filePath, mode: "100644", type: "blob", sha: blobData.sha });
+  }
+
+  const treeRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/git/trees`, {
+    method: "POST", headers,
+    body: JSON.stringify({ base_tree: baseTreeSha, tree: treeItems }),
   });
-  if (getRes.ok) sha = (await getRes.json()).sha;
-  return fetch(`https://api.github.com/repos/${owner}/${repo}/contents/${encodeURIComponent(filePath)}`, {
-    method: "PUT",
-    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ message: sha ? `Update ${filePath}` : `Add ${filePath}`, content: contentBase64, sha }),
+  const treeData = await treeRes.json();
+
+  const newCommitRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/git/commits`, {
+    method: "POST", headers,
+    body: JSON.stringify({ message: "Add all project files (single commit)", tree: treeData.sha, parents: [latestCommitSha] }),
+  });
+  const newCommitData = await newCommitRes.json();
+
+  // Ref update karo - isi se sirf EK BAAR workflow trigger hoga
+  await fetch(`https://api.github.com/repos/${owner}/${repo}/git/refs/heads/main`, {
+    method: "PATCH", headers,
+    body: JSON.stringify({ sha: newCommitData.sha }),
   });
 }
 
@@ -294,16 +303,13 @@ export async function POST(request) {
         const buffer = Buffer.from(await file.arrayBuffer());
         new AdmZip(buffer).extractAllTo(workDir, true);
       } else {
-        // Single .jsx/.tsx/.js file - khud poora project scaffold karo
         isSingleFile = true;
         const textContent = Buffer.from(await file.arrayBuffer()).toString("utf8");
-        scaffoldWebProjectFromSingleFile(workDir, textContent, file.name);
+        scaffoldWebProjectFromSingleFile(workDir, textContent);
       }
 
       const keystoreFile = formData.get("keystore");
-      if (keystoreFile && keystoreFile.size > 0) {
-        keystoreBuffer = Buffer.from(await keystoreFile.arrayBuffer());
-      }
+      if (keystoreFile && keystoreFile.size > 0) keystoreBuffer = Buffer.from(await keystoreFile.arrayBuffer());
       signing = {
         alias: formData.get("keyAlias") || "",
         storePass: formData.get("storePassword") || "",
@@ -313,15 +319,11 @@ export async function POST(request) {
 
     let type, buildRoot;
     if (isSingleFile) {
-      type = "web-capacitor";
-      buildRoot = workDir;
+      type = "web-capacitor"; buildRoot = workDir;
     } else {
       const detected = detectProjectType(workDir);
-      type = detected.type;
-      buildRoot = detected.root;
-      if (type === "unknown") {
-        return Response.json({ error: "Project type pehchan nahi paye." }, { status: 400 });
-      }
+      type = detected.type; buildRoot = detected.root;
+      if (type === "unknown") return Response.json({ error: "Project type pehchan nahi paye." }, { status: 400 });
     }
     const workflow = getWorkflow(type, signing);
 
@@ -340,24 +342,22 @@ export async function POST(request) {
       return Response.json({ error: "Repo nahi ban paya: " + JSON.stringify(errData) }, { status: 500 });
     }
 
-    const workflowPushRes = await pushFile(owner, repoName, ghToken, ".github/workflows/build.yml", workflow);
-    if (!workflowPushRes.ok) {
-      const errData = await workflowPushRes.json();
-      return Response.json({ error: "Workflow push nahi ho payi: " + JSON.stringify(errData) }, { status: 500 });
-    }
+    // Thoda wait karo taaki auto_init ka commit ready ho jaye
+    await new Promise((r) => setTimeout(r, 2000));
 
-    if (keystoreBuffer) {
-      await pushFile(owner, repoName, ghToken, "keystore/release.keystore", keystoreBuffer, true);
-    }
+    // Saari files ek object me jama karo
+    const filesMap = { ".github/workflows/build.yml": workflow };
+    if (keystoreBuffer) filesMap["keystore/release.keystore"] = keystoreBuffer;
 
     const allFiles = walkFiles(buildRoot);
     for (const relPath of allFiles) {
-      const fullPath = path.join(buildRoot, relPath);
-      const content = fs.readFileSync(fullPath);
-      await pushFile(owner, repoName, ghToken, relPath, content, true);
+      filesMap[relPath] = fs.readFileSync(path.join(buildRoot, relPath));
     }
 
-    return Response.json({ owner, repo: repoName, type, hasCustomKeystore: !!keystoreBuffer, isSingleFile });
+    // Sab ek sath, EK commit me push karo
+    await batchCommitAllFiles(owner, repoName, ghToken, filesMap);
+
+    return Response.json({ owner, repo: repoName, type, hasCustomKeystore: !!keystoreBuffer, isSingleFile, fileCount: Object.keys(filesMap).length });
   } catch (err) {
     return Response.json({ error: err.message }, { status: 500 });
   } finally {
