@@ -37,7 +37,10 @@ Apna jawab EXACTLY in yeh headings ke saath do (Hinglish mein, simple bhasha):
 ## 3. Project Structure
 ## 4. Bugs Aur Problems (code mein)
 Yeh section ALWAYS bharo, khaali mat chhodo.
-## 5. Run Karne Ke Steps
+## 5. Security Check (API Keys/Secrets)
+Agar code mein koi hardcoded API key, password, ya secret token dikhe (jo .env mein hona chahiye tha), to yaha WARNING do: file naam aur kya risk hai. Agar kuch na mile to likho "Koi hardcoded secret nahi mila, achha hai!"
+
+## 6. Run Karne Ke Steps
 
 Files list: ${fileList.join(", ")}
 

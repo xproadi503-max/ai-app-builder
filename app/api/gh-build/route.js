@@ -37,22 +37,35 @@ function detectProjectType(rootDir) {
   return { type: "unknown", root: rootDir };
 }
 
-function getWorkflow(type) {
-  const upload = (p) => `      - uses: actions/upload-artifact@v4\n        with:\n          name: app-release-apk\n          path: ${p}`;
-  const ensureGradlew = `      - name: Ensure gradlew exists
+function signStep(apkPathVar, alias, storePass, keyPass) {
+  return `      - name: Setup Android SDK tools
+        uses: android-actions/setup-android@v3
+      - name: Prepare keystore (use uploaded ya generate naya)
         run: |
-          if [ ! -f "./gradlew" ]; then
-            gradle wrapper --gradle-version 8.5
+          mkdir -p keystore_out
+          if [ -f "keystore/release.keystore" ]; then
+            cp keystore/release.keystore keystore_out/release.keystore
+          else
+            keytool -genkeypair -v -keystore keystore_out/release.keystore -alias ${alias} -keyalg RSA -keysize 2048 -validity 10000 -storepass ${storePass} -keypass ${keyPass} -dname "CN=AI App Builder,O=AI App Builder,C=IN"
           fi
-      - run: chmod +x gradlew && ./gradlew assembleRelease`;
-  const ensureGradlewAndroidFolder = `      - name: Ensure gradlew exists
+      - name: Sign APK
         run: |
-          cd android
-          if [ ! -f "./gradlew" ]; then
-            gradle wrapper --gradle-version 8.5
-          fi
-          cd ..
-      - run: cd android && chmod +x gradlew && ./gradlew assembleRelease`;
+          BUILD_TOOLS=$(ls $ANDROID_HOME/build-tools | sort -V | tail -1)
+          $ANDROID_HOME/build-tools/$BUILD_TOOLS/apksigner sign --ks keystore_out/release.keystore --ks-key-alias ${alias} --ks-pass pass:${storePass} --key-pass pass:${keyPass} --out signed-release.apk ${apkPathVar}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: signed-apk
+          path: signed-release.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: your-keystore-KEEP-SAFE
+          path: keystore_out/release.keystore`;
+}
+
+function getWorkflow(type, signing) {
+  const alias = signing.alias || "appkey";
+  const storePass = signing.storePass || "changeit123";
+  const keyPass = signing.keyPass || signing.storePass || "changeit123";
 
   if (type === "flutter") {
     return `name: Build APK
@@ -67,7 +80,7 @@ jobs:
           flutter-version: '3.24.0'
       - run: flutter pub get
       - run: flutter build apk --release
-${upload("build/app/outputs/flutter-apk/app-release.apk")}
+${signStep("build/app/outputs/flutter-apk/app-release.apk", alias, storePass, keyPass)}
 `;
   }
   if (type === "expo") {
@@ -87,8 +100,15 @@ jobs:
         with:
           distribution: 'temurin'
           java-version: '17'
-${ensureGradlewAndroidFolder}
-${upload("android/app/build/outputs/apk/release/app-release.apk")}
+      - name: Ensure gradlew exists
+        run: |
+          cd android
+          if [ ! -f "./gradlew" ]; then
+            gradle wrapper --gradle-version 8.5
+          fi
+          cd ..
+      - run: cd android && chmod +x gradlew && ./gradlew assembleRelease
+${signStep("android/app/build/outputs/apk/release/app-release-unsigned.apk", alias, storePass, keyPass)}
 `;
   }
   if (type === "bare-rn") {
@@ -107,8 +127,15 @@ jobs:
         with:
           distribution: 'temurin'
           java-version: '17'
-${ensureGradlewAndroidFolder}
-${upload("android/app/build/outputs/apk/release/app-release.apk")}
+      - name: Ensure gradlew exists
+        run: |
+          cd android
+          if [ ! -f "./gradlew" ]; then
+            gradle wrapper --gradle-version 8.5
+          fi
+          cd ..
+      - run: cd android && chmod +x gradlew && ./gradlew assembleRelease
+${signStep("android/app/build/outputs/apk/release/app-release-unsigned.apk", alias, storePass, keyPass)}
 `;
   }
   if (type === "android-native") {
@@ -123,8 +150,13 @@ jobs:
         with:
           distribution: 'temurin'
           java-version: '17'
-${ensureGradlew}
-${upload("app/build/outputs/apk/release/app-release.apk")}
+      - name: Ensure gradlew exists
+        run: |
+          if [ ! -f "./gradlew" ]; then
+            gradle wrapper --gradle-version 8.5
+          fi
+      - run: chmod +x gradlew && ./gradlew assembleRelease
+${signStep("app/build/outputs/apk/release/app-release-unsigned.apk", alias, storePass, keyPass)}
 `;
   }
   return null;
@@ -154,7 +186,6 @@ async function pushFile(owner, repo, token, filePath, content, isBinaryBuffer = 
     headers: { Authorization: `Bearer ${token}` },
   });
   if (getRes.ok) sha = (await getRes.json()).sha;
-
   return fetch(`https://api.github.com/repos/${owner}/${repo}/contents/${encodeURIComponent(filePath)}`, {
     method: "PUT",
     headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
@@ -167,30 +198,27 @@ export async function POST(request) {
   try {
     const session = await getServerSession(authOptions);
     if (!session?.accessToken) {
-      return Response.json({ error: "Login nahi hai ya token missing." }, { status: 401 });
+      return Response.json({ error: "Login nahi hai." }, { status: 401 });
     }
     const ghToken = session.accessToken;
-
     const contentType = request.headers.get("content-type") || "";
     fs.mkdirSync(workDir, { recursive: true });
 
+    let keystoreBuffer = null;
+    let signing = {};
+
     if (contentType.includes("application/json")) {
-      // Existing GitHub repo se source
       const { owner: srcOwner, repo: srcRepo, branch } = await request.json();
       const zipRes = await fetch(`https://api.github.com/repos/${srcOwner}/${srcRepo}/zipball/${branch || ""}`, {
         headers: { Authorization: `Bearer ${ghToken}` },
       });
       if (!zipRes.ok) return Response.json({ error: "Repo download nahi ho paya" }, { status: 500 });
       const buffer = Buffer.from(await zipRes.arrayBuffer());
-      const zip = new AdmZip(buffer);
-      zip.extractAllTo(workDir, true);
-      // GitHub zipball ek top-level extra folder deta hai, usko unwrap karo
+      new AdmZip(buffer).extractAllTo(workDir, true);
       const inner = fs.readdirSync(workDir);
       if (inner.length === 1 && fs.statSync(path.join(workDir, inner[0])).isDirectory()) {
         const innerPath = path.join(workDir, inner[0]);
-        for (const item of fs.readdirSync(innerPath)) {
-          fs.renameSync(path.join(innerPath, item), path.join(workDir, item));
-        }
+        for (const item of fs.readdirSync(innerPath)) fs.renameSync(path.join(innerPath, item), path.join(workDir, item));
         fs.rmdirSync(innerPath);
       }
     } else {
@@ -199,6 +227,16 @@ export async function POST(request) {
       if (!file) return Response.json({ error: "Koi file upload nahi hui" }, { status: 400 });
       const buffer = Buffer.from(await file.arrayBuffer());
       new AdmZip(buffer).extractAllTo(workDir, true);
+
+      const keystoreFile = formData.get("keystore");
+      if (keystoreFile && keystoreFile.size > 0) {
+        keystoreBuffer = Buffer.from(await keystoreFile.arrayBuffer());
+      }
+      signing = {
+        alias: formData.get("keyAlias") || "",
+        storePass: formData.get("storePassword") || "",
+        keyPass: formData.get("keyPassword") || "",
+      };
     }
 
     const detected = detectProjectType(workDir);
@@ -207,7 +245,7 @@ export async function POST(request) {
     if (type === "unknown") {
       return Response.json({ error: "Project type pehchan nahi paye." }, { status: 400 });
     }
-    const workflow = getWorkflow(type);
+    const workflow = getWorkflow(type, signing);
 
     const userRes = await fetch("https://api.github.com/user", { headers: { Authorization: `Bearer ${ghToken}` } });
     const user = await userRes.json();
@@ -230,6 +268,10 @@ export async function POST(request) {
       return Response.json({ error: "Workflow push nahi ho payi: " + JSON.stringify(errData) }, { status: 500 });
     }
 
+    if (keystoreBuffer) {
+      await pushFile(owner, repoName, ghToken, "keystore/release.keystore", keystoreBuffer, true);
+    }
+
     const allFiles = walkFiles(buildRoot);
     for (const relPath of allFiles) {
       const fullPath = path.join(buildRoot, relPath);
@@ -237,7 +279,7 @@ export async function POST(request) {
       await pushFile(owner, repoName, ghToken, relPath, content, true);
     }
 
-    return Response.json({ owner, repo: repoName, type });
+    return Response.json({ owner, repo: repoName, type, hasCustomKeystore: !!keystoreBuffer });
   } catch (err) {
     return Response.json({ error: err.message }, { status: 500 });
   } finally {
