@@ -145,7 +145,7 @@ export default function Home() {
   function pollBuildStatus(owner, repo) {
     const interval = setInterval(async () => {
       try {
-        const res = await fetch(`/api/gh-build-status?owner=${owner}&repo=${repo}`);
+        const res = await fetch(`/api/gh-build-status?owner=${owner}&repo=${repo}&branch=${branch}`);
         const data = await res.json();
         if (data.error) return;
         setBuildInfo(data);
@@ -159,10 +159,13 @@ export default function Home() {
     const currentRetry = retryCountRef.current;
     const validFiles = data.aiFixFiles || [];
     const rejected = data.aiRejectedFiles || [];
-    setFixLog((prev) => [...prev, { attempt: currentRetry + 1, explanation: data.aiExplanation || "", appliedFiles: validFiles.map((f) => f.path), rejectedFiles: rejected }]);
+    setFixLog((prev) => [...prev, { attempt: currentRetry + 1, explanation: data.aiExplanation || "", appliedFiles: validFiles.map((f) => f.path), rejectedFiles: rejected, councilSteps: data.councilSteps || [] }]);
     if (currentRetry >= MAX_RETRIES || validFiles.length === 0) { setBuildLoading(false); return; }
     try {
-      await fetch("/api/gh-apply-fix", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ owner, repo, files: validFiles }) });
+      const prRes = await fetch("/api/gh-apply-fix", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ owner, repo, files: validFiles, attemptNumber: currentRetry + 1 }) });
+      const prData = await prRes.json();
+      if (prData.branch) setTimeout(() => pollBuildStatus(owner, repo, prData.branch), 20000);
+      return;
       retryCountRef.current = currentRetry + 1;
       setRetryCount(currentRetry + 1);
       setTimeout(() => pollBuildStatus(owner, repo), 20000);
