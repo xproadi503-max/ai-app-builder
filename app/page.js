@@ -46,6 +46,9 @@ export default function Home() {
   const [repoInfo, setRepoInfo] = useState(null);
   const [retryCount, setRetryCount] = useState(0);
   const [fixLog, setFixLog] = useState([]);
+  const [bugFixLoading, setBugFixLoading] = useState(false);
+  const [bugFixResult, setBugFixResult] = useState(null);
+  const [bugFixError, setBugFixError] = useState("");
   const retryCountRef = useRef(0);
   const MAX_RETRIES = 3;
 
@@ -87,6 +90,30 @@ export default function Home() {
       if (data.error) setError(data.error); else setResult(data);
     } catch (e) { setError("Kuch galat ho gaya: " + e.message); }
     setLoading(false);
+  }
+
+  async function handleFixBugs() {
+    setBugFixError(""); setBugFixResult(null); setBugFixLoading(true);
+    try {
+      let res;
+      if (sourceMode === "repo") {
+        const payload = currentSourcePayload();
+        if (!payload) { setBugFixError("Pehle ek repo select karo"); setBugFixLoading(false); return; }
+        res = await fetch("/api/fix-bugs", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ owner: payload.owner, repo: payload.repo, branch: payload.branch }),
+        });
+      } else {
+        if (!file) { setBugFixError("Pehle .zip file select karo"); setBugFixLoading(false); return; }
+        const formData = new FormData();
+        formData.append("file", file);
+        res = await fetch("/api/fix-bugs", { method: "POST", body: formData });
+      }
+      const data = await res.json();
+      if (data.error) { setBugFixError(data.error); setBugFixLoading(false); return; }
+      setBugFixResult(data);
+    } catch (e) { setBugFixError("Kuch galat ho gaya: " + e.message); }
+    setBugFixLoading(false);
   }
 
   async function handleBuildApk() {
@@ -195,6 +222,23 @@ export default function Home() {
             </div>
           )}
 
+          {result && (
+            <button onClick={handleFixBugs} disabled={bugFixLoading} style={styles.blueBtn(bugFixLoading)}>
+              {bugFixLoading ? "⏳ Bugs Fix ho rahe hain..." : "🔧 Bugs Fix Karo (AI se)"}
+            </button>
+          )}
+          {bugFixError && <p style={{ color: "#f87171", marginTop: 14 }}>⚠️ {bugFixError}</p>}
+          {bugFixResult && (
+            <div style={styles.card}>
+              <div style={styles.sectionTitle}>🔧 Bug-Fix Result</div>
+              <p style={{ color: "#cbd5e1" }}>{bugFixResult.summary}</p>
+              {bugFixResult.fixedFiles?.length > 0 && <p style={{ color: "#4ade80", fontSize: 14 }}>✅ Fix hui files: {bugFixResult.fixedFiles.join(", ")}</p>}
+              {bugFixResult.rejectedFiles?.length > 0 && <p style={{ color: "#fbbf24", fontSize: 14 }}>⚠️ Invalid fix, ignore ki: {bugFixResult.rejectedFiles.join(", ")}</p>}
+              {bugFixResult.owner && (
+                <p style={{ marginTop: 8 }}><a href={`https://github.com/${bugFixResult.owner}/${bugFixResult.repo}`} target="_blank" rel="noreferrer" style={{ color: "#60a5fa" }}>📂 Fixed code yaha dekho: {bugFixResult.owner}/{bugFixResult.repo}</a></p>
+              )}
+            </div>
+          )}
           {buildError && <p style={{ color: "#f87171", marginTop: 14 }}>⚠️ {buildError}</p>}
 
           {repoInfo && (
