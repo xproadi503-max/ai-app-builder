@@ -4,15 +4,22 @@ import { useEffect, useRef, useState } from "react";
 function preprocessCode(rawCode) {
   let code = rawCode;
 
-  // Lucide-react se jo icons import ho rahe hain unke naam nikalo
+  // Lucide-react se jo icons import ho rahe hain unke naam nikalo (alias "as" bhi handle karo)
   let lucideNames = [];
-  const lucideMatch = code.match(/import\s*\{([^}]+)\}\s*from\s*["']lucide-react["']/);
+  const lucideMatch = code.match(/import\s*\{([\s\S]*?)\}\s*from\s*["']lucide-react["']/);
   if (lucideMatch) {
-    lucideNames = lucideMatch[1].split(",").map((s) => s.trim()).filter(Boolean);
+    lucideNames = lucideMatch[1]
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .map((s) => {
+        const asMatch = s.match(/(\w+)\s+as\s+(\w+)/);
+        return asMatch ? asMatch[2] : s; // "Image as ImageIcon" -> "ImageIcon"
+      });
   }
 
-  // Saari import lines hata do (browser me seedhe nahi chalti)
-  code = code.replace(/^import\s+.*?;?\s*$/gm, "");
+  // Saari import statements poori tarah hata do (multi-line bhi, semicolon tak)
+  code = code.replace(/import\s+[\s\S]*?;/g, "");
 
   // "export default function Name" -> "function Name", naam yaad rakho
   let componentName = "App";
@@ -42,7 +49,7 @@ export default function LivePreviewFrame({ code: rawCode }) {
 
     function tryRender() {
       if (!window.Babel) {
-        setTimeout(tryRender, 200); // Babel abhi load ho raha hai, thoda wait karo
+        setTimeout(tryRender, 200);
         return;
       }
       try {
