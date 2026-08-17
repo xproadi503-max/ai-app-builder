@@ -103,12 +103,17 @@ export async function GET(request) {
           result.fromMemory = true;
           result.learningId = pastLearning.id;
         } else {
-          // Nahi mila to 3-AI council se naya sochwao
-          const { finalOutput, steps } = await councilFix(
-            logsText,
-            "Neeche GitHub Actions build fail hone ka error LOG hai. Isse samjho kya galat hai aur agar koi specific file ka fix pata chal sakta hai to do, warna files: [] rakho.",
-            token
-          );
+          // Nahi mila to 3-AI council se naya sochwao. Gradle/Kotlin build-level
+          // errors ("Duplicate class", kotlin-stdlib version clash) common hai
+          // Capacitor Android builds me — AI ko explicitly batao ke fix sirf JS/JSX
+          // files me hi nahi, android/build.gradle ya app/build.gradle me bhi ho
+          // sakta hai (jaise Kotlin version ko force karna).
+          const isGradleKotlinClash = /Duplicate class kotlin\.|kotlin-stdlib.*kotlin-stdlib|Duplicate class .*found in modules/i.test(logsText);
+          const taskDescription = "Neeche GitHub Actions build fail hone ka error LOG hai. Isse samjho kya galat hai aur agar koi specific file ka fix pata chal sakta hai to do, warna files: [] rakho."
+            + (isGradleKotlinClash
+                ? ` YEH ERROR Kotlin stdlib version clash lag raha hai (\"Duplicate class kotlin...\" alag-alag kotlin-stdlib jar versions se) — yeh JS/JSX file se fix NAHI hoga. Fix \`android/build.gradle\` ya \`android/app/build.gradle\` me karo: ya to sabhi subprojects me Kotlin stdlib version ko \`configurations.all { resolutionStrategy { force 'org.jetbrains.kotlin:kotlin-stdlib:<ek fixed version>' } }\` se force karo, ya duplicate \`kotlin-stdlib-jdk7\`/\`kotlin-stdlib-jdk8\` modules ko \`exclude group: 'org.jetbrains.kotlin'\` se exclude karo. files array me poora updated build.gradle content do.`
+                : "");
+          const { finalOutput, steps } = await councilFix(logsText, taskDescription, token);
           const parsed = extractJson(finalOutput);
 
           if (parsed && Array.isArray(parsed.files)) {

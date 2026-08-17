@@ -119,7 +119,16 @@ export async function POST(request) {
       ? `## 0. ⚠️ Pre-Flight Warnings (Build se pehle fix karo)\n${preFlightWarnings.map((w) => "- " + w).join("\n")}\n\n`
       : "";
 
-    const analysis = preflightSection + (await askAI(buildPrompt(fileList, combinedText)));
+    // Safety net: agar askAI() kisi wajah se maxDuration (60s) ke bahar chala jaaye,
+    // to Vercel function ko silently kill karega aur frontend ko khaali/invalid
+    // response milega ("Unexpected end of JSON input"). Isliye yaha khud 50s ka
+    // hard deadline lagate hai taaki hamesha ek valid JSON error waapas jaaye.
+    const aiResult = await Promise.race([
+      askAI(buildPrompt(fileList, combinedText)),
+      new Promise((_, reject) => setTimeout(() => reject(new Error("AI response 50s me nahi aaya, sabhi providers slow/down lag rahe hai. Dobara try karo.")), 50000)),
+    ]);
+
+    const analysis = preflightSection + aiResult;
     return Response.json({ analysis, fileCount: fileList.length, files: fileList, preFlightWarnings });
   } catch (err) {
     return Response.json({ error: err.message }, { status: 500 });

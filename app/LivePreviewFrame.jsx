@@ -47,8 +47,14 @@ export default function LivePreviewFrame({ code: rawCode }) {
   useEffect(() => {
     if (!rawCode || !iframeRef.current) return;
 
+    let babelWaitMs = 0;
     function tryRender() {
       if (!window.Babel) {
+        babelWaitMs += 200;
+        if (babelWaitMs >= 10000) {
+          setError("Babel CDN 10 second me load nahi hua — internet slow hai ya unpkg.com is network pe blocked hai. Preview nahi ban sakta.");
+          return;
+        }
         setTimeout(tryRender, 200);
         return;
       }
@@ -59,18 +65,33 @@ export default function LivePreviewFrame({ code: rawCode }) {
         const html = `<!DOCTYPE html>
 <html>
 <head>
-  <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
-  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <script>
+    function showLoadError(lib) {
+      var el = document.getElementById('root');
+      if (el) el.innerHTML = '<pre style="padding:20px;color:#dc2626;white-space:pre-wrap;font-size:13px;">Preview Error: ' + lib + ' CDN se load nahi hua (unpkg.com is network pe blocked/slow ho sakta hai). Internet/VPN check karo.</pre>';
+    }
+  </script>
+  <script src="https://unpkg.com/react@18/umd/react.development.js" onerror="showLoadError('React')"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" onerror="showLoadError('ReactDOM')"></script>
   <script src="https://cdn.tailwindcss.com"></script>
   <style>body { margin: 0; font-family: sans-serif; }</style>
 </head>
 <body>
-  <div id="root"></div>
+  <div id="root">
+    <pre style="padding:20px;color:#94a3b8;white-space:pre-wrap;font-size:13px;">Loading preview…</pre>
+  </div>
   <script>
-    window.React = React;
-    const { useState, useEffect, useRef, useCallback, useMemo, useReducer, useContext } = React;
-    ${lucideStub}
+    // Poora block try/catch ke andar hai — pehle 'window.React = React' bahar tha,
+    // isliye agar CDN se React load nahi hota (network block), yeh line uncaught
+    // ReferenceError deti thi aur poora #root khaali/blank reh jaata tha bina
+    // koi error dikhaye. Ab har failure catch hoke visible message banta hai.
     try {
+      if (typeof React === "undefined" || typeof ReactDOM === "undefined") {
+        throw new Error("React/ReactDOM CDN se load nahi hue — internet slow hai ya unpkg.com is network pe blocked hai.");
+      }
+      window.React = React;
+      const { useState, useEffect, useRef, useCallback, useMemo, useReducer, useContext } = React;
+      ${lucideStub}
       ${compiled}
       ReactDOM.createRoot(document.getElementById('root')).render(React.createElement(${componentName}));
     } catch (e) {

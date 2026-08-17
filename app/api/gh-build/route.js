@@ -34,9 +34,16 @@ function detectProjectType(rootDir) {
     const deps = { ...pkg.dependencies, ...pkg.devDependencies };
     if (deps.expo && !fs.existsSync(path.join(pkgDir, "android"))) return { type: "expo", root: pkgDir };
     if (deps["react-native"]) return { type: "bare-rn", root: pkgDir };
+    // Plain web project (React/Vite/vanilla JS etc.) — koi RN/Expo dependency nahi,
+    // lekin package.json hai to isse web-capacitor maan lo instead of "unknown".
+    return { type: "web-capacitor", root: pkgDir };
   }
   const gradleDir = findFileUpward(rootDir, ["build.gradle", "build.gradle.kts"]);
   if (gradleDir) return { type: "android-native", root: gradleDir };
+  // package.json bhi nahi mila, lekin plain HTML site ho sakta hai (jaise ek
+  // single index.html game) — index.html check karo, npm build skip karo.
+  const htmlDir = findFileUpward(rootDir, ["index.html"]);
+  if (htmlDir) return { type: "web-static", root: htmlDir };
   return { type: "unknown", root: rootDir };
 }
 
@@ -101,6 +108,33 @@ jobs:
       - run: npm run build
       - run: npm install @capacitor/core @capacitor/cli @capacitor/android
       - run: npx cap init "AI Generated App" "com.aibuilder.app" --web-dir=dist
+      - run: npx cap add android
+      - run: npx cap sync android
+      - uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+      - run: cd android && chmod +x gradlew && ./gradlew assembleRelease
+${signStep("android/app/build/outputs/apk/release/app-release-unsigned.apk", alias, storePass, keyPass)}
+`;
+  }
+
+  if (type === "web-static") {
+    // Plain HTML/CSS/JS site — koi package.json/build step nahi hai (jaise ek
+    // single index.html game). Seedha uss folder ko web-dir bana ke Capacitor
+    // se wrap karo, npm install/build skip karo.
+    return `name: Build APK
+on: push
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - run: npm install @capacitor/core @capacitor/cli @capacitor/android
+      - run: npx cap init "AI Generated App" "com.aibuilder.app" --web-dir=.
       - run: npx cap add android
       - run: npx cap sync android
       - uses: actions/setup-java@v4

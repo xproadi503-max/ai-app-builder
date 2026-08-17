@@ -320,18 +320,36 @@ export default function Home() {
     const validFiles = data.aiFixFiles || [];
     const rejected = data.aiRejectedFiles || [];
     setFixLog((prev) => [...prev, { attempt: currentRetry + 1, explanation: data.aiExplanation || "", appliedFiles: validFiles.map((f) => f.path), rejectedFiles: rejected, councilSteps: data.councilSteps || [] }]);
-    if (currentRetry >= MAX_RETRIES || validFiles.length === 0) { setBuildLoading(false); return; }
+    if (currentRetry >= MAX_RETRIES) {
+      setBuildError(`Build ${MAX_RETRIES} baar fail hua, AI se auto-fix ki max koshish khatam ho gayi. Neeche "Auto-Fix History" me dekho AI ne kya try kiya, aur "Live logs" me asli GitHub Actions error dekho — manually fix karna padega.`);
+      setBuildLoading(false);
+      return;
+    }
+    if (validFiles.length === 0) {
+      setBuildError("Build fail hua, aur AI ko koi bharosemand fix nahi mila (ya jo mila woh syntax check me reject ho gaya) — isliye koi naya commit nahi hua. Neeche \"Auto-Fix History\" me AI ka explanation aur \"Live logs\" me asli error dekho.");
+      setBuildLoading(false);
+      return;
+    }
     try {
       const prRes = await fetch("/api/gh-apply-fix", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ owner, repo, files: validFiles, attemptNumber: currentRetry + 1 }) });
       const prData = await prRes.json();
+      if (prData.error) {
+        setBuildError("AI ne fix socha, lekin commit push karte waqt error aaya: " + prData.error);
+        setBuildLoading(false);
+        return;
+      }
       retryCountRef.current = currentRetry + 1;
       setRetryCount(currentRetry + 1);
       if (prData.branch) {
         setTimeout(() => pollBuildStatus(owner, repo, prData.branch), 20000);
       } else {
+        setBuildError("AI ne fix socha lekin commit branch info nahi mili — dobara try karo.");
         setBuildLoading(false);
       }
-    } catch { setBuildLoading(false); }
+    } catch (e) {
+      setBuildError("Fix apply karte waqt error: " + e.message);
+      setBuildLoading(false);
+    }
   }
 
   async function toggleHistory() {
