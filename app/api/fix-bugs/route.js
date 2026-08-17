@@ -8,6 +8,8 @@ import { askAI } from "../../../lib/ai";
 import * as acorn from "acorn";
 import jsx from "acorn-jsx";
 
+export const maxDuration = 60;
+
 const JSXParser = acorn.Parser.extend(jsx());
 const SKIP_DIRS = ["node_modules", ".git", "build", ".next", "dist"];
 

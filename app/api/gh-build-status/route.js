@@ -5,6 +5,8 @@ import { searchSimilarLearning, saveLearning, incrementLearningSuccess } from ".
 import * as acorn from "acorn";
 import jsx from "acorn-jsx";
 
+export const maxDuration = 60;
+
 const JSXParser = acorn.Parser.extend(jsx());
 
 function validateSyntax(content) {
@@ -18,6 +20,26 @@ function extractJson(text) {
   const s = cleaned.indexOf("{"), e = cleaned.lastIndexOf("}");
   if (s !== -1 && e !== -1) { try { return JSON.parse(cleaned.slice(s, e + 1)); } catch {} }
   return null;
+}
+
+// GitHub Actions logs mein asli error "##[error]" marker se hota hai.
+// Blind tail-slice kabhi warning tak simat jaata hai aur asli error miss ho jaata hai -
+// isliye error marker ke aas-paas ka context nikalte hain, jahan bhi ho.
+function extractErrorContext(logsText, contextBefore = 3500, contextAfter = 1000) {
+  const markers = [...logsText.matchAll(/##\[error\][^\n]*/g)];
+  if (markers.length > 0) {
+    // saare error lines jama karo, plus sabse aakhri error ke aas-paas ka bada context
+    const lastMarker = markers[markers.length - 1];
+    const start = Math.max(0, lastMarker.index - contextBefore);
+    const end = Math.min(logsText.length, lastMarker.index + lastMarker[0].length + contextAfter);
+    const allErrorLines = markers.map((m) => m[0]).join("\n");
+    return `--- ERROR LINES FOUND ---\n${allErrorLines}\n\n--- CONTEXT AROUND FINAL ERROR ---\n${logsText.slice(start, end)}`;
+  }
+  const exitIdx = logsText.lastIndexOf("Process completed with exit code");
+  if (exitIdx !== -1) {
+    return logsText.slice(Math.max(0, exitIdx - contextBefore), exitIdx + 200);
+  }
+  return logsText.slice(-4000);
 }
 
 export async function GET(request) {
@@ -65,7 +87,11 @@ export async function GET(request) {
         const logsRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/actions/jobs/${failedJob.id}/logs`, {
           headers: { Authorization: `Bearer ${token}` },
         });
-        const logsText = (await logsRes.text()).slice(-4000);
+        const rawLogs = await logsRes.text();
+        const failedStep = failedJob.steps?.find((s) => s.conclusion === "failure");
+        const stepHeader = failedStep ? `FAILED STEP: "${failedStep.name}" (step #${failedStep.number})\n\n` : "";
+        const logsText = stepHeader + extractErrorContext(rawLogs);
+        result.failedStepName = failedStep?.name || null;
 
         // PEHLE: kya yeh error pehle bhi aa chuka hai aur solve ho chuka hai?
         const pastLearning = await searchSimilarLearning(logsText, projectType);

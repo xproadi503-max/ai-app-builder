@@ -1,6 +1,8 @@
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "../../../lib/authOptions";
 
+export const maxDuration = 60;
+
 export async function POST(request) {
   try {
     const session = await getServerSession(authOptions);

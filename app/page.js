@@ -190,6 +190,8 @@ export default function Home() {
   const [repoInfo, setRepoInfo] = useState(null);
   const [retryCount, setRetryCount] = useState(0);
   const [fixLog, setFixLog] = useState([]);
+  const [buildHistory, setBuildHistory] = useState(null);
+  const [historyLoading, setHistoryLoading] = useState(false);
   const [bugFixLoading, setBugFixLoading] = useState(false);
   const [bugFixResult, setBugFixResult] = useState(null);
   const [bugFixError, setBugFixError] = useState("");
@@ -332,6 +334,19 @@ export default function Home() {
     } catch { setBuildLoading(false); }
   }
 
+  async function toggleHistory() {
+    if (buildHistory !== null) { setBuildHistory(null); return; } // toggle band karo
+    setHistoryLoading(true);
+    try {
+      const res = await fetch("/api/build-history");
+      const data = await res.json();
+      setBuildHistory(data.builds || []);
+    } catch {
+      setBuildHistory([]);
+    }
+    setHistoryLoading(false);
+  }
+
   function downloadUrl() {
     if (!repoInfo || !buildInfo?.artifactId) return "#";
     return `/api/gh-download?owner=${repoInfo.owner}&repo=${repoInfo.repo}&artifactId=${buildInfo.artifactId}`;
@@ -395,11 +410,44 @@ export default function Home() {
           </div>
         ) : (
           <div style={{ animation: "fadeIn 0.3s ease" }}>
-            <div style={styles.greetRow}>
-              <StatusDot color={c.success} pulse={false} label="ONLINE" />
-              <span>·</span>
-              <span>signed in as {session.user.name || session.user.email}</span>
+            <div style={{ ...styles.greetRow, justifyContent: "space-between" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <StatusDot color={c.success} pulse={false} label="ONLINE" />
+                <span>·</span>
+                <span>signed in as {session.user.name || session.user.email}</span>
+              </div>
+              <button onClick={toggleHistory} style={{ ...styles.btn("ghost", false), flex: "0 0 auto", padding: "6px 12px", fontSize: 12 }}>
+                🕘 {historyLoading ? "Loading…" : buildHistory !== null ? "Hide History" : "Build History"}
+              </button>
             </div>
+
+            {buildHistory !== null && (
+              <div style={styles.panel}>
+                <div style={styles.panelHead}>
+                  <div style={styles.panelHeadLeft}>🕘 Build History</div>
+                  <span style={styles.badge(c.info)}>{buildHistory.length}</span>
+                </div>
+                <div style={styles.panelBody}>
+                  {buildHistory.length === 0 ? (
+                    <p style={{ margin: 0, fontSize: 13, color: c.textMute }}>Abhi tak koi build nahi hui.</p>
+                  ) : (
+                    buildHistory.map((b) => (
+                      <div key={b.id} style={styles.timelineItem(c.info)}>
+                        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 6 }}>
+                          <a href={`https://github.com/${b.owner}/${b.repo_name}`} target="_blank" rel="noreferrer" style={styles.link}>
+                            🔗 {b.owner}/{b.repo_name}
+                          </a>
+                          <span style={styles.badge(c.warning)}>{b.project_type}</span>
+                        </div>
+                        <div style={{ fontSize: 11.5, color: c.textMute, fontFamily: mono, marginTop: 6 }}>
+                          {b.source_name} · {new Date(b.created_at).toLocaleString("en-IN")}
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+            )}
 
             {/* Source panel */}
             <div style={styles.panel}>
