@@ -157,7 +157,7 @@ export default function Home() {
     } catch (e) { setBuildError("Kuch galat ho gaya: " + e.message); setBuildLoading(false); }
   }
 
-  function pollBuildStatus(owner, repo) {
+  function pollBuildStatus(owner, repo, branch = "main") {
     const interval = setInterval(async () => {
       try {
         const res = await fetch(`/api/gh-build-status?owner=${owner}&repo=${repo}&branch=${branch}`);
@@ -179,11 +179,13 @@ export default function Home() {
     try {
       const prRes = await fetch("/api/gh-apply-fix", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ owner, repo, files: validFiles, attemptNumber: currentRetry + 1 }) });
       const prData = await prRes.json();
-      if (prData.branch) setTimeout(() => pollBuildStatus(owner, repo, prData.branch), 20000);
-      return;
       retryCountRef.current = currentRetry + 1;
       setRetryCount(currentRetry + 1);
-      setTimeout(() => pollBuildStatus(owner, repo), 20000);
+      if (prData.branch) {
+        setTimeout(() => pollBuildStatus(owner, repo, prData.branch), 20000);
+      } else {
+        setBuildLoading(false);
+      }
     } catch { setBuildLoading(false); }
   }
 
